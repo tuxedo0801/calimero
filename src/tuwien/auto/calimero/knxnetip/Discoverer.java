@@ -451,14 +451,21 @@ public class Discoverer
 		try {
 			final byte[] buf = PacketHelper.toPacket(new DescriptionRequest(nat ? null
 					: (InetSocketAddress) s.getLocalSocketAddress()));
+                        
+                        // start receiver thread
+                        ReceiverLoop receiver = startDescriptionReceiver(s, timeout * 1000, server, s.toString());
 			s.send(new DatagramPacket(buf, buf.length, server));
-			final ReceiverLoop looper = new ReceiverLoop(s, 256, timeout * 1000,
-				server);
-			looper.loop();
-			if (looper.thrown != null)
-				throw looper.thrown;
-			if (looper.res != null)
-				return looper.res;
+                        try {
+                            // block until receiver finishs
+                            join(receiver);
+                        } catch (InterruptedException ex) {
+                            // forward the exception to outer try/catch
+                            throw new IOException(ex);
+                        }
+			if (receiver.thrown != null)
+				throw receiver.thrown;
+			if (receiver.res != null)
+				return receiver.res;
 		}
 		catch (final IOException e) {
 			final String msg = "network failure on getting description";
@@ -513,14 +520,12 @@ public class Discoverer
 			final InetSocketAddress res = mcast ? new InetSocketAddress(SYSTEM_SETUP_MULTICAST,
 					s.getLocalPort()) : nat ? null : new InetSocketAddress(localAddr,
 					s.getLocalPort());
-			final byte[] buf = PacketHelper.toPacket(new SearchRequest(res));
-			s.send(new DatagramPacket(buf, buf.length, SYSTEM_SETUP_MULTICAST, SEARCH_PORT));
-			synchronized (receivers) {
-				final ReceiverLoop l = startReceiver(s, timeout,
-						nifName + localAddr.getHostAddress());
-				receivers.add(l);
-				return l;
-			}
+                        final byte[] buf = PacketHelper.toPacket(new SearchRequest(res));
+                        // start receiver BEFORE sending out the datagram
+                        final ReceiverLoop l = startReceiver(s, timeout, nifName + localAddr.getHostAddress());
+                        receivers.add(l);
+                        s.send(new DatagramPacket(buf, buf.length, SYSTEM_SETUP_MULTICAST, SEARCH_PORT));
+                        return l;
 		}
 		catch (final IOException e) {
 			if (mcast)
@@ -613,6 +618,16 @@ public class Discoverer
 	{
 		final ReceiverLoop looper = new ReceiverLoop(socket, 256, timeout * 1000, name + ":"
 				+ socket.getLocalPort());
+		looper.t = new Thread(looper, "Discoverer " + name);
+		looper.t.setDaemon(true);
+		looper.t.start();
+		return looper;
+	}
+        
+        private ReceiverLoop startDescriptionReceiver(final DatagramSocket socket, final int timeout, final InetSocketAddress queriedServer,
+		final String name)
+	{
+		final ReceiverLoop looper = new ReceiverLoop(socket, 256, timeout * 1000, queriedServer);
 		looper.t = new Thread(looper, "Discoverer " + name);
 		looper.t.setDaemon(true);
 		looper.t.start();
